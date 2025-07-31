@@ -1,27 +1,21 @@
 import os
 import cv2
-import time
 import base64
 import numpy as np
 import pyautogui
 import asyncio
 import json
-from io import BytesIO
-from PIL import Image
 from datetime import datetime, timezone
 from plyer import notification
-from pynput import keyboard
+from pynput import keyboard, mouse
 import inspect
-from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import aiofiles
-from openai import OpenAI
 from openai import AsyncOpenAI
-from pynput import mouse
 
-# Initialize OpenAI client
+# Initialize OpenAI client with environment variable
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Initialize FastAPI app
@@ -29,7 +23,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://taimgpt.com","https://www.taimgpt.com"],
+    allow_origins=["https://taimgpt.com", "https://www.taimgpt.com"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -40,7 +34,7 @@ DIFF_THRESHOLD = 800000
 IMAGE_SAVE_PATH = "frame.jpg"
 MAX_ANALYSES = 50
 LOG_FILE = "gpt4_vision_log.txt"
-log_file_path= "log.json"
+log_file_path = "log.json"
 
 SUBS = {
     "basic": {"max_tokens": 400},
@@ -71,8 +65,9 @@ def reset_tokens():
 async def encode_image(image_path: str):
     if not os.path.exists(image_path):
         raise FileNotFoundError(f"Image not found: {image_path}")
-    with open(image_path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
+    async with aiofiles.open(image_path, "rb") as f:
+        content = await f.read()
+    return base64.b64encode(content).decode("utf-8")
 
 async def capture_screen(filename=IMAGE_SAVE_PATH):
     screenshot = pyautogui.screenshot()
@@ -118,26 +113,21 @@ async def log_insight(content):
 def on_key_press(key):
     global user_is_active
     user_is_active = True
-    
-def on_move(x,y):
-    print('pointer moved to ({0},{1})'.format(x,y))
+
+def on_move(x, y):
+    pass  # Removed print to reduce noise in server logs
 
 def on_click(x, y, button, pressed):
-    print('{0} at {1}'.format(
-        'Pressed' if pressed else 'released',(x,y)))
-    if not pressed:
-        return False
-def on_scroll(x,y,dx,dy):
-    print('scrolled {0} at {1}'.format(
-        'up' if dy>0 else 'down',(x,y)
-    ))
+    pass  # Removed print to reduce noise in server logs
+
+def on_scroll(x, y, dx, dy):
+    pass  # Removed print to reduce noise in server logs
 
 def monitor_user_activity():
-    listener = keyboard.Listener(on_press=on_key_press)
-    listener.start()
+    keyboard.Listener(on_press=on_key_press).start()
+
 def monitor_mouse_activity():
-    listener= mouse.Listener(on_move=on_move, on_click=on_click, on_scroll=on_scroll)
-    listener.start()
+    mouse.Listener(on_move=on_move, on_click=on_click, on_scroll=on_scroll).start()
 
 # --- AGENT IMPLEMENTATIONS ---
 async def vision_agent():
@@ -155,22 +145,20 @@ async def vision_agent():
         if has_screen_changed(prev_frame, frame) and user_is_active:
             print(f"🔍 Change detected. Analyzing... ({analysis_count + 1}/{MAX_ANALYSES})")
 
-            while token_state["tokens_used"] < max_token:
-                insights = await analyze_frame(IMAGE_SAVE_PATH, "What could the user improve, correct, or optimize in this moment?")
-                estimated_tokens = int(len(insights) / 4)
+            insights = await analyze_frame(IMAGE_SAVE_PATH, "What could the user improve, correct, or optimize in this moment?")
 
-                if token_state["tokens_used"] + estimated_tokens > max_token:
-                    print("⚠️ Token limit reached. Upgrade to continue.")
-                    break
+            estimated_tokens = int(len(insights) / 4)
+            if token_state["tokens_used"] + estimated_tokens > max_token:
+                print("⚠️ Token limit reached. Upgrade to continue.")
+                break
 
-                token_state["tokens_used"] += estimated_tokens
-
-                await log_insight(insights)
-                await show_notification("🧠 GPT Vision Insight", insights[:250] + ("..." if len(insights) > 250 else ""))
-                analysis_count += 1
-                user_is_active = False
-            else:
-                print("⏳ No significant change or user inactive.")
+            token_state["tokens_used"] += estimated_tokens
+            await log_insight(insights)
+            await show_notification("🧠 GPT Vision Insight", insights[:250] + ("..." if len(insights) > 250 else ""))
+            analysis_count += 1
+            user_is_active = False
+        else:
+            print("⏳ No significant change or user inactive.")
 
         prev_frame = frame
         await asyncio.sleep(FRAME_CAPTURE_INTERVAL)
@@ -189,32 +177,35 @@ async def stop_recording():
     logs = await log_user_session(LOG_FILE)
     return JSONResponse(content={"summary": summary, "logs": logs})
 
+async def recommendation_fn(summary, logs, MODEL="gpt-3.5" if user_plan == "basic" else "gpt-4o-mini"):
+    response = await client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": "You are a helpful AI assistant"},
+            {"role": "user", "content": f"Based on this summary and logs, recommend what the user can do next.\n\nSummary: {summary}\n\nLogs: {logs}"}
+        ],
+        temperature=1,
+    )
+    return response.choices[0].message.content
 
-async def recommendation(summary, logs, MODEL= "gpt-3.5" if user_plan== "basic" else "gpt-4o-mini"):
-    response= await client.chat.completions.create(
-         model= MODEL,
-         messages= [{"role": "system","content": "you are a helpful AI assistant"},
-                    {"role": "user","content": f"Based on this summary and logs, recommend what the user can do next.\n\nSummary: {summary}\n\nLogs: {logs}"}],
-         temperature= 1,
-     )
-     return response.choices[0].message.content
 @app.post("/prev_session_recommendation")
-async def prev_session_recommendation(prev_session: bool= True):
-    data= await stop_recording()
-    recommendation= await recommendation(data["summary"], data["logs"])
-    return {"AI recommends": recommendation} if prev_session else "no recommendations"
-    
-     
+async def prev_session_recommendation(prev_session: bool = True):
+    if not prev_session:
+        return JSONResponse(content={"message": "no recommendations"})
+    data = await stop_recording()
+    recommendation = await recommendation_fn(data["summary"], data["logs"])
+    return JSONResponse(content={"AI recommends": recommendation})
 
 # --- SUMMARY AND LOGGING ---
 async def summarize(summary: str) -> str:
     return f"Summary: {summary}"
 
 async def log_user_session(log_file_path, limit: int = 10) -> str:
-    with open(log_file_path, "r") as f:
-         lines= f.readlines()
-
-         events= lines[-limit:]
+    if not os.path.exists(log_file_path):
+        return "No log file found."
+    async with aiofiles.open(log_file_path, "r") as f:
+        lines = await f.readlines()
+    events = lines[-limit:]
     return "Recent Session Events:\n" + "\n".join(events) if events else "No recent events to summarize."
 
 # --- TOOLING ---
@@ -258,7 +249,7 @@ class Agent:
 
     async def run(self):
         if self.name == "summarizer agent":
-            result = await log_user_session()
+            result = await log_user_session(LOG_FILE)
             full_prompt = f"{self.instructions}\n\n{result}"
             return await call_openai_model(full_prompt)
         elif self.name == "log session agent":
@@ -283,12 +274,14 @@ async def execute_tool_call(tool_call, tools_map):
         return await func(**args)
     raise ValueError(f"Tool {name} not found")
 
-async def main(MODEL= "gpt-3.5" if user_plan== "basic" else "gpt-4o-mini"):
+async def main(MODEL="gpt-3.5" if user_plan == "basic" else "gpt-4o-mini"):
     tools = [summarize]
     tools_map = {tool.__name__: tool for tool in tools}
     schema = [function_to_schema(tool) for tool in tools]
 
-    messages = [{"role": "system", "content": "You are a helpful AI assistant. Run the app like this: first, the vision agent, then the summarizer agent, and lastly the log session agent."}]
+    messages = [
+        {"role": "system", "content": "You are a helpful AI assistant. Run the app like this: first, the vision agent, then the summarizer agent, and lastly the log session agent."}
+    ]
 
     response = await client.chat.completions.create(
         model=MODEL,
