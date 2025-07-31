@@ -14,7 +14,6 @@ WORKDIR /app
 
 # Copy your requirements and install Python dependencies
 COPY required.txt .
-RUN pip install --upgrade pip setuptools wheel
 RUN pip install -r required.txt
 
 # Copy the rest of your app code
