@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy your requirements and install Python dependencies
-COPY requirements.txt .
+COPY required.txt .
 RUN pip install --upgrade pip setuptools wheel
 RUN pip install -r required.txt
 
