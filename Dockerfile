@@ -27,5 +27,5 @@ COPY . .
 EXPOSE 8000
 
 # Command to run Xvfb in the background and then start your app
-CMD["./start.sh"]
+CMD ["./start.sh"]
 
