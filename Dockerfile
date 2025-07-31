@@ -27,5 +27,5 @@ COPY . .
 EXPOSE 8000
 
 # Command to run Xvfb in the background and then start your app
-CMD sh -c "Xvfb :99 -screen 0 1024x768x24 & uvicorn gpt:app --host 0.0.0.0 --port \$PORT"
+CMD["./start.sh"]
 
