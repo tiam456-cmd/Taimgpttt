@@ -1,5 +1,7 @@
 # Use official Python 3.10 image as base
+# Use official Python 3.10 image as base
 FROM python:3.10-slim
+ENV DISPLAY=:99
 
 # Install system dependencies including Xvfb and any others you need
 RUN apt-get update && apt-get install -y \
