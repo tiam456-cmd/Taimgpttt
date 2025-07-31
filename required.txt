@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+aiofiles
+openai
+pynput
+pyautogui
+opencv-python
+numpy
+pillow
+plyer
